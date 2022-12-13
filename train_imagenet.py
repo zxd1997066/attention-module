@@ -63,6 +63,7 @@ parser.add_argument('--profile', dest='profile', action='store_true', help='prof
 parser.add_argument('--quantized_engine', type=str, default=None, help='quantized_engine')
 parser.add_argument('--ipex', dest='ipex', action='store_true', help='ipex')
 parser.add_argument('--jit', dest='jit', action='store_true', help='jit')
+parser.add_argument('--dummy', dest='dummy', action='store_true', help='dummy dataset')
 
 best_prec1 = 0
 
@@ -131,15 +132,31 @@ def main():
 
     # import pdb
     # pdb.set_trace()
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
+    if args.dummy:
+        print("=> Dummy data is used!")
+        train_dataset = datasets.FakeData(1281167, (3, 256, 256), 1000, transforms.ToTensor())
+        val_dataset = datasets.FakeData(50000, (3, 224, 224), 1000, transforms.ToTensor())
+    else:
+        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
+                transforms.RandomResizedCrop(256),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                normalize,
+            ]))
+        val_dataset = datasets.ImageFolder(valdir, transforms.Compose([
                 transforms.Resize(256),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 normalize,
-                ])),
-            batch_size=args.batch_size, shuffle=False,
-           num_workers=args.workers, pin_memory=True)
+            ]))
+    train_sampler = None
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
 
     def trace_handler(p):
         output = p.key_averages().table(sort_by="self_cpu_time_total")
@@ -156,37 +173,23 @@ def main():
         p.export_chrome_trace(timeline_file)
 
     if args.evaluate:
-        if args.profile:
-            with torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                record_shapes=True,
-                schedule=torch.profiler.schedule(
-                    wait=int(args.num_iter/2),
-                    warmup=2,
-                    active=1,
-                ),
-                on_trace_ready=trace_handler,
-            ) as p:
-                args.p = p
+        with torch.no_grad():
+            if args.profile:
+                with torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                    record_shapes=True,
+                    schedule=torch.profiler.schedule(
+                        wait=int(args.num_iter/2),
+                        warmup=2,
+                        active=1,
+                    ),
+                    on_trace_ready=trace_handler,
+                ) as p:
+                    args.p = p
+                    validate(val_loader, model, criterion, 0)
+            else:
                 validate(val_loader, model, criterion, 0)
-        else:
-            validate(val_loader, model, criterion, 0)
         return
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(256),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-
-    train_sampler = None
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch)
