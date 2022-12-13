@@ -53,20 +53,30 @@ parser.add_argument("--seed", type=int, default=1234, metavar='BS', help='input 
 parser.add_argument("--prefix", type=str, required=True, metavar='PFX', help='prefix for logging & checkpoint saving')
 parser.add_argument('--evaluate', dest='evaluate', action='store_true', help='evaluation only')
 parser.add_argument('--att-type', type=str, choices=['BAM', 'CBAM'], default=None)
+
+# for oob
+parser.add_argument('--precision', type=str, default='float32', help='precision')
+parser.add_argument('--channels_last', type=int, default=1, help='use channels last format')
+parser.add_argument('--num_iter', type=int, default=-1, help='num_iter')
+parser.add_argument('--num_warmup', type=int, default=-1, help='num_warmup')
+parser.add_argument('--profile', dest='profile', action='store_true', help='profile')
+parser.add_argument('--quantized_engine', type=str, default=None, help='quantized_engine')
+parser.add_argument('--ipex', dest='ipex', action='store_true', help='ipex')
+parser.add_argument('--jit', dest='jit', action='store_true', help='jit')
+
 best_prec1 = 0
 
 if not os.path.exists('./checkpoints'):
     os.mkdir('./checkpoints')
 
 def main():
-    global args, best_prec1
+    global best_prec1
     global viz, train_lot, test_lot
-    args = parser.parse_args()
-    print ("args", args)
 
     torch.manual_seed(args.seed)
     if args.ngpu >= 0:
         torch.cuda.manual_seed_all(args.seed)
+        cudnn.benchmark = True
     random.seed(args.seed)
 
     # create model
@@ -84,6 +94,13 @@ def main():
     if args.ngpu >= 0:
         criterion = criterion.cuda()
         model = model.cuda()
+
+    # NHWC
+    if args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
+        criterion = criterion.to(memory_format=torch.channels_last)
+        print("---- Use NHWC model")
+
     print ("model")
     print (model)
 
@@ -106,9 +123,6 @@ def main():
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-
-    cudnn.benchmark = True
-
     # Data loading code
     traindir = os.path.join(args.data, 'train')
     valdir = os.path.join(args.data, 'val')
@@ -126,8 +140,37 @@ def main():
                 ])),
             batch_size=args.batch_size, shuffle=False,
            num_workers=args.workers, pin_memory=True)
+
+    def trace_handler(p):
+        output = p.key_averages().table(sort_by="self_cpu_time_total")
+        print(output)
+        import pathlib
+        timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+        if not os.path.exists(timeline_dir):
+            try:
+                os.makedirs(timeline_dir)
+            except:
+                pass
+        timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + '-' + \
+                    'CBAM-' + str(p.step_num) + '-' + str(os.getpid()) + '.json'
+        p.export_chrome_trace(timeline_file)
+
     if args.evaluate:
-        validate(val_loader, model, criterion, 0)
+        if args.profile:
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True,
+                schedule=torch.profiler.schedule(
+                    wait=int(args.num_iter/2),
+                    warmup=2,
+                    active=1,
+                ),
+                on_trace_ready=trace_handler,
+            ) as p:
+                args.p = p
+                validate(val_loader, model, criterion, 0)
+        else:
+            validate(val_loader, model, criterion, 0)
         return
 
     train_dataset = datasets.ImageFolder(
@@ -222,17 +265,29 @@ def validate(val_loader, model, criterion, epoch):
 
     # switch to evaluate mode
     model.eval()
-
+    total_time = 0.0
+    total_sample = 0
     end = time.time()
     for i, (input, target) in enumerate(val_loader):
+        if args.num_iter > 0 and i >= args.num_iter: break
+        h2d_time = time.time()
         if args.ngpu >= 0:
             target = target.cuda()
+        h2d_time = time.time() - h2d_time
         input_var = torch.autograd.Variable(input, volatile=True)
         target_var = torch.autograd.Variable(target, volatile=True)
         
         # compute output
+        elapsed = time.time()
         output = model(input_var)
         loss = criterion(output, target_var)
+        elapsed = time.time() - elapsed + h2d_time
+        if args.profile:
+            args.p.step()
+        print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+        if i >= args.num_warmup:
+            total_time += elapsed
+            total_sample += args.batch_size
         
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
@@ -255,6 +310,10 @@ def validate(val_loader, model, criterion, epoch):
     
     print(' * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'
             .format(top1=top1, top5=top5))
+    throughput = total_sample / total_time
+    latency = total_time / total_sample * 1000
+    print('inference latency: %.3f ms' % latency)
+    print('inference Throughput: %f images/s' % throughput)
 
     return top1.avg
 
@@ -308,4 +367,17 @@ def accuracy(output, target, topk=(1,)):
 
 
 if __name__ == '__main__':
-    main()
+    global args
+    args = parser.parse_args()
+    print ("args", args)
+
+    if args.precision == "bfloat16":
+        print('---- Enable AMP bfloat16')
+        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            main()
+    elif args.precision == "float16":
+        print('---- Enable AMP float16')
+        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+            main()
+    else:
+        main()
