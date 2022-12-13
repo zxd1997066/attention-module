@@ -29,7 +29,7 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet',
                         ' (default: resnet18)')
 parser.add_argument('--depth', default=50, type=int, metavar='D',
                     help='model depth')
-parser.add_argument('--ngpu', default=4, type=int, metavar='G',
+parser.add_argument('--ngpu', default=-1, type=int, metavar='G',
                     help='number of gpus to use')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -65,7 +65,8 @@ def main():
     print ("args", args)
 
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if args.ngpu >= 0:
+        torch.cuda.manual_seed_all(args.seed)
     random.seed(args.seed)
 
     # create model
@@ -73,14 +74,16 @@ def main():
         model = ResidualNet( 'ImageNet', args.depth, 1000, args.att_type )
 
     # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                             momentum=args.momentum,
                             weight_decay=args.weight_decay)
-    model = torch.nn.DataParallel(model, device_ids=list(range(args.ngpu)))
+    # model = torch.nn.DataParallel(model, device_ids=list(range(args.ngpu)))
     #model = torch.nn.DataParallel(model).cuda()
-    model = model.cuda()
+    if args.ngpu >= 0:
+        criterion = criterion.cuda()
+        model = model.cuda()
     print ("model")
     print (model)
 
@@ -92,10 +95,10 @@ def main():
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
             args.start_epoch = checkpoint['epoch']
             best_prec1 = checkpoint['best_prec1']
-            model.load_state_dict(checkpoint['state_dict'])
+            model.load_state_dict(checkpoint['state_dict'], strict=False)
             if 'optimizer' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -116,7 +119,7 @@ def main():
     # pdb.set_trace()
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, transforms.Compose([
-                transforms.Scale(256),
+                transforms.Resize(256),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 normalize,
@@ -130,7 +133,7 @@ def main():
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            transforms.RandomSizedCrop(size0),
+            transforms.RandomResizedCrop(256),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
@@ -177,8 +180,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
     for i, (input, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
-        
-        target = target.cuda(async=True)
+        if args.ngpu >= 0:
+            target = target.cuda()
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
         
@@ -188,7 +191,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
+        losses.update(loss.item(), input.size(0))
         top1.update(prec1[0], input.size(0))
         top5.update(prec5[0], input.size(0))
         
@@ -222,7 +225,8 @@ def validate(val_loader, model, criterion, epoch):
 
     end = time.time()
     for i, (input, target) in enumerate(val_loader):
-        target = target.cuda(async=True)
+        if args.ngpu >= 0:
+            target = target.cuda()
         input_var = torch.autograd.Variable(input, volatile=True)
         target_var = torch.autograd.Variable(target, volatile=True)
         
@@ -232,7 +236,7 @@ def validate(val_loader, model, criterion, epoch):
         
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
+        losses.update(loss.item(), input.size(0))
         top1.update(prec1[0], input.size(0))
         top5.update(prec5[0], input.size(0))
         
@@ -298,7 +302,7 @@ def accuracy(output, target, topk=(1,)):
 
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
