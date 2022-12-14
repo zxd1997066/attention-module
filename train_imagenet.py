@@ -55,6 +55,7 @@ parser.add_argument('--evaluate', dest='evaluate', action='store_true', help='ev
 parser.add_argument('--att-type', type=str, choices=['BAM', 'CBAM'], default=None)
 
 # for oob
+parser.add_argument('--device', type=str, default='cpu', help='device')
 parser.add_argument('--precision', type=str, default='float32', help='precision')
 parser.add_argument('--channels_last', type=int, default=1, help='use channels last format')
 parser.add_argument('--num_iter', type=int, default=-1, help='num_iter')
@@ -75,7 +76,7 @@ def main():
     global viz, train_lot, test_lot
 
     torch.manual_seed(args.seed)
-    if args.ngpu >= 0:
+    if args.device == 'cuda':
         torch.cuda.manual_seed_all(args.seed)
         cudnn.benchmark = True
     random.seed(args.seed)
@@ -92,9 +93,6 @@ def main():
                             weight_decay=args.weight_decay)
     # model = torch.nn.DataParallel(model, device_ids=list(range(args.ngpu)))
     #model = torch.nn.DataParallel(model).cuda()
-    if args.ngpu >= 0:
-        criterion = criterion.cuda()
-        model = model.cuda()
 
     # NHWC
     if args.channels_last:
@@ -123,6 +121,10 @@ def main():
                   .format(args.resume, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
+
+    if args.device == 'cuda':
+        criterion = criterion.cuda()
+        model = model.cuda()
 
     # Data loading code
     traindir = os.path.join(args.data, 'train')
@@ -226,7 +228,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
     for i, (input, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
-        if args.ngpu >= 0:
+        if args.device == 'cuda':
             target = target.cuda()
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
@@ -274,7 +276,7 @@ def validate(val_loader, model, criterion, epoch):
     for i, (input, target) in enumerate(val_loader):
         if args.num_iter > 0 and i >= args.num_iter: break
         h2d_time = time.time()
-        if args.ngpu >= 0:
+        if args.device == 'cuda':
             target = target.cuda()
         h2d_time = time.time() - h2d_time
         input_var = torch.autograd.Variable(input, volatile=True)

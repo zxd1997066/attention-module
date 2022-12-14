@@ -25,7 +25,7 @@ function main {
     for model_name in ${model_name_list[@]}
     do
         # pre run
-        python train_imagenet.py --arch resnet --depth 50 --att-type CBAM \
+        python train_imagenet.py --device $device --arch resnet --depth 50 --att-type CBAM \
             --prefix EVAL --evaluate --dummy /tmp \
             --resume $CKPT_DIR \
             --batch-size 1 \
@@ -72,7 +72,7 @@ function generate_core {
             OOB_EXEC_HEADER=" CUDA_VISIBLE_DEVICES=${device_array[i]} "
         fi
         printf " ${OOB_EXEC_HEADER} \
-            python train_imagenet.py --arch resnet --depth 50 --att-type CBAM \
+            python train_imagenet.py --device $device --arch resnet --depth 50 --att-type CBAM \
                 --prefix EVAL --evaluate --dummy /tmp \
                 --resume $CKPT_DIR \
                 --batch-size $batch_size \
@@ -101,7 +101,7 @@ function generate_core_launcher {
                     --log_path ${log_dir} \
                     --ninstances ${#device_array[@]} \
                     --ncore_per_instance ${real_cores_per_instance} \
-            train_imagenet.py --arch resnet --depth 50 --att-type CBAM \
+            train_imagenet.py --device $device --arch resnet --depth 50 --att-type CBAM \
                 --prefix EVAL --evaluate --dummy /tmp \
                 --resume $CKPT_DIR \
                 --batch-size $batch_size \
