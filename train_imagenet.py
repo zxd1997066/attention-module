@@ -286,6 +286,7 @@ def validate(val_loader, model, criterion, epoch):
         elapsed = time.time()
         output = model(input_var)
         loss = criterion(output, target_var)
+        if torch.cuda.is_available(): torch.cuda.synchronize()
         elapsed = time.time() - elapsed + h2d_time
         if args.profile:
             args.p.step()
