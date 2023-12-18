@@ -283,6 +283,7 @@ def validate(val_loader, model, criterion, epoch):
         if args.num_iter > 0 and i >= args.num_iter: break
         h2d_time = time.time()
         if args.device == 'cuda':
+            input = input.cuda()
             target = target.cuda()
         h2d_time = time.time() - h2d_time
         input_var = torch.autograd.Variable(input, volatile=True)
