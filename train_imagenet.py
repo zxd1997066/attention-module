@@ -69,7 +69,8 @@ parser.add_argument("--compile", action='store_true', default=False,
                     help="enable torch.compile")
 parser.add_argument("--backend", type=str, default='inductor',
                     help="enable torch.compile backend")
-
+parser.add_argument("--triton_cpu", action='store_true', default=False,
+                    help="enable triton_cpu")
 best_prec1 = 0
 
 if not os.path.exists('./checkpoints'):
@@ -84,7 +85,10 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
         cudnn.benchmark = True
     random.seed(args.seed)
-
+    if args.triton_cpu:
+        print("run with triton cpu backend")
+        import torch._inductor.config
+        torch._inductor.config.cpu_backend="triton"
     # create model
     if args.arch == "resnet":
         model = ResidualNet( 'ImageNet', args.depth, 1000, args.att_type )
