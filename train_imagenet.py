@@ -77,6 +77,7 @@ if not os.path.exists('./checkpoints'):
     os.mkdir('./checkpoints')
 
 def main():
+    import torch
     global best_prec1
     global viz, train_lot, test_lot
 
